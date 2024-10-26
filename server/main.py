@@ -2,8 +2,13 @@ import os
 import sys
 import openai
 import sounddevice as sd
+import numpy as np
 import wavio
 from dotenv import load_dotenv
+from gtts import gTTS
+from playsound import playsound
+import tempfile
+import time
 
 # Load environment variables from the .env file
 load_dotenv()
@@ -11,23 +16,47 @@ load_dotenv()
 # Set the OpenAI API key
 openai.api_key = os.getenv('OPENAI_API_KEY')
 
-def record_audio(duration=5, fs=44100):
-    """
-    Records audio from the microphone for a given duration.
-    :param duration: Recording duration in seconds.
-    :param fs: Sampling frequency.
-    :return: Filename of the recorded audio.
-    """
-    print(f"Recording audio for {duration} seconds...")
-    try:
-        recording = sd.rec(int(duration * fs), samplerate=fs, channels=1, dtype='int16')
-        sd.wait()  # Wait until recording is finished
+# Global variables
+fs = 44100  # Sampling frequency
+channels = 1  # Mono audio
+dtype = 'int16'  # Data type
+
+recording_data = []  # List to store recording data
+stream = None  # To hold the stream object
+
+def startRecord():
+    """Start recording audio from the microphone."""
+    global stream, recording_data
+
+    recording_data = []  # Reset the recording data
+
+    def callback(indata, frames, time, status):
+        """Callback function to collect audio data."""
+        if status:
+            print(status)
+        recording_data.append(indata.copy())
+
+    stream = sd.InputStream(samplerate=fs, channels=channels, dtype=dtype, callback=callback)
+    stream.start()
+    print("Recording started.")
+
+def stopRecord():
+    """Stop recording and save the audio to a file."""
+    global stream, recording_data
+    if stream is not None:
+        stream.stop()
+        stream.close()
+        stream = None
+        print("Recording stopped.")
+        # Concatenate the recorded data
+        audio_data = np.concatenate(recording_data)
+        # Save to a WAV file
         filename = 'recorded_audio.wav'
-        wavio.write(filename, recording, fs, sampwidth=2)
-        print("Recording complete.")
+        wavio.write(filename, audio_data, fs, sampwidth=2)
+        print("Audio saved to", filename)
         return filename
-    except Exception as e:
-        print(f"Error during audio recording: {e}")
+    else:
+        print("No recording in progress.")
         return None
 
 def transcribe_audio(file_path):
@@ -46,14 +75,14 @@ def transcribe_audio(file_path):
 def classify_transcript(transcribed_text):
     """Classify the transcript using GPT-3.5 Turbo."""
     prompt = f"""
-You are an assistant that classifies phone call transcripts as 'spam' or 'legitimate'.
+You are an assistant that classifies phone call transcripts as 'scam' or 'spam' or 'legitimate'.
 
 Transcript:
 \"\"\"
 {transcribed_text}
 \"\"\"
 
-Please answer with 'scam' or'spam' or 'legitimate' and provide a brief explanation.
+Please answer with 'this call is likely a' 'scam' or 'spam' or 'legitimate' and provide a brief and concise explanation.
 """
     try:
         response = openai.ChatCompletion.create(
@@ -71,6 +100,24 @@ Please answer with 'scam' or'spam' or 'legitimate' and provide a brief explanati
     except Exception as e:
         print(f"Error during classification: {e}")
         return None
+
+def speak_text(text):
+    """Convert text to speech and play it."""
+    try:
+        # Create a temporary file without keeping it open
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as fp:
+            temp_file = fp.name  # Get the name of the temp file
+        # Now the file is closed, and we can write to it
+        # Generate the speech
+        tts = gTTS(text=text, lang='en')
+        # Save the speech to the temp file
+        tts.save(temp_file)
+        # Play the audio file
+        playsound(temp_file)
+        # Delete the temporary file
+        os.remove(temp_file)
+    except Exception as e:
+        print(f"Error during text-to-speech conversion: {e}")
 
 def detect_spam_call(file_path):
     """Full pipeline: Transcribe and classify the audio file."""
@@ -92,34 +139,20 @@ def detect_spam_call(file_path):
     print("Classification complete.")
     print(f"\nClassification Result:\n{classification}")
 
+    # Speak the classification result
+    print("Speaking the classification result...")
+    speak_text(classification)
+    print("Done.")
+
 if __name__ == '__main__':
-    # Ask the user whether to record audio or use an existing file
-    print("Choose an option:")
-    print("1. Record audio from microphone")
-    print("2. Use existing audio file")
-    choice = input("Enter 1 or 2: ")
-
-    if choice == '1':
-        # Record audio from the microphone
-        duration = input("Enter recording duration in seconds (default is 5): ")
-        if duration.strip() == '':
-            duration = 5
-        else:
-            duration = float(duration)
-        audio_file_name = record_audio(duration=duration)
-    elif choice == '2':
-        # Use an existing audio file
-        audio_file_name = input("Enter the name of the audio file (with extension): ")
-        # Check if the file exists
-        if not os.path.exists(audio_file_name):
-            print(f"Audio file not found at path: {audio_file_name}")
-            sys.exit(1)
-    else:
-        print("Invalid choice. Exiting.")
-        sys.exit(1)
-
+    # Main function
+    print("Starting recording...")
+    startRecord()
+    time.sleep(5)  # Record for 5 seconds
+    stopRecord()
     # Proceed if the audio file is available
-    if audio_file_name:
+    audio_file_name = 'recorded_audio.wav'
+    if os.path.exists(audio_file_name):
         # Run the spam call detection
         detect_spam_call(audio_file_name)
     else:
